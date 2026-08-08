@@ -354,6 +354,13 @@
     font-size: 13px;
     line-height: 1.5;
   }
+  .loot-access-desc{
+    font-style: italic;
+    color: var(--ink-soft);
+    font-size: 12.5px;
+    margin-bottom: 8px;
+    line-height: 1.5;
+  }
   .ledger-line{
     display:flex; justify-content:space-between;
     font-family:'IBM Plex Mono', monospace;
@@ -433,6 +440,11 @@
         </select>
       </div>
 
+      <div class="field">
+        <label for="factionSelect">Faction</label>
+        <select id="factionSelect"></select>
+      </div>
+
       <button class="generate" id="genBtn">Draw a New Dungeon</button>
       <button class="btn-mini" id="downloadBtn" style="width:100%; margin-top:8px; padding:8px;">📥 Download dungeon (.html)</button>
 
@@ -487,6 +499,47 @@ const DIFF_INDEX = {low:0, moderate:1, high:2};
 // Max distinct monster stat blocks per encounter, per SRD guidance ("Number of Stat
 // Blocks" — referencing more than 2-3 stat blocks per fight gets hard to run).
 const MAX_STAT_BLOCK_VARIETY = 2;
+
+// A broad theme (cave/ruins) spans several very different creature types (a cave
+// dungeon's pool includes Beasts, Dragons, Oozes, Elementals, Fey, and more). Picking
+// monsters independently per room could put a giant spider, a fire elemental, and a
+// young dragon in the same lair. Instead, one "faction" is picked once per dungeon
+// generation and used for every room, so the inhabitants actually feel like they
+// belong together. Themes that are already a single creature type (crypt, infernal)
+// don't need this — and "mixed" is left deliberately unrestricted since that's the
+// point of choosing it.
+const SUBFACTIONS = {
+  cave: [
+    {types:["Beast"], label:"a den of wild beasts"},
+    {types:["Beast","Monstrosity"], label:"beasts and monstrosities"},
+    {types:["Monstrosity"], label:"a monstrous lair"},
+    {types:["Ooze"], label:"an oozing horror"},
+    {types:["Aberration","Ooze"], label:"aberrant horrors"},
+    {types:["Plant","Beast"], label:"overgrown wilds"},
+    {types:["Dragon"], label:"a wyrm's lair"},
+    {types:["Elemental"], label:"an elemental rift"},
+    {types:["Fey"], label:"a feywild incursion"}
+  ],
+  ruins: [
+    {types:["Humanoid"], label:"a bandit stronghold"},
+    {types:["Giant"], label:"a giant's hold"},
+    {types:["Construct"], label:"guardian constructs"},
+    {types:["Celestial","Construct"], label:"a sanctified ruin"},
+    {types:["Celestial"], label:"a hallowed ruin"}
+  ]
+};
+
+function pickFaction(theme, forcedIndex){
+  if(theme==="crypt") return {types:["Undead"], label:"an undead haunting"};
+  if(theme==="infernal") return {types:["Fiend"], label:"a fiendish incursion"};
+  if(SUBFACTIONS[theme]){
+    if(forcedIndex !== undefined && forcedIndex !== null && SUBFACTIONS[theme][forcedIndex]){
+      return SUBFACTIONS[theme][forcedIndex];
+    }
+    return choice(SUBFACTIONS[theme]);
+  }
+  return null; // "mixed" — intentionally unrestricted
+}
 
 // Monster roster: every monster in the SRD 5.2.1 (2024 rules), released by Wizards
 // of the Coast under CC-BY-4.0 and free to reuse with exact names and stats. Parsed
@@ -821,13 +874,15 @@ const MONSTERS = [
   {name:"Wolf",cr:"1/4",xp:50,theme:["cave"],ac:12,hp:11,spd:40,speedFull:"40 ft.",atk:"+4",dmg:"1d6 + 2 piercing",note:"Pack Tactics",size:"Medium",type:"Beast",alignment:"Unaligned",senses:"Darkvision 60 ft.; Passive Perception 15",languages:"None",skills:"Perception +5, Stealth +4",str:2,dex:2,con:1,int:-4,wis:1,cha:-2,strScore:14,dexScore:15,conScore:12,intScore:3,wisScore:12,chaScore:6},
 ];
 
-// Trap damage scaling follows the SRD's own example trap-scaling table (a rolling
-// rock/pit trap scaled by party level band), extended to a matching DC progression.
+// Trap damage recalibrated directly against the SRD's own example trap-scaling
+// numbers (a pit/rolling-sphere trap given per level band): ~10-13 dmg at 5-10,
+// ~21-36 dmg at 11-16, ~42-57 dmg at 17-20. The previous version used much
+// larger d10 dice across the board and was hitting well above these references.
 const TRAP_TIERS = [
-  {max:4, dcRange:[11,14], dmgLow:"2d10", dmgHigh:"4d10"},
-  {max:10, dcRange:[13,17], dmgLow:"4d10", dmgHigh:"10d10"},
-  {max:16, dcRange:[15,19], dmgLow:"10d10", dmgHigh:"14d10"},
-  {max:20, dcRange:[17,20], dmgLow:"14d10", dmgHigh:"20d10"}
+  {max:4, dcRange:[11,13], dmgLow:"1d10", dmgHigh:"2d8"},
+  {max:10, dcRange:[12,15], dmgLow:"3d6", dmgHigh:"5d8"},
+  {max:16, dcRange:[14,17], dmgLow:"6d6", dmgHigh:"8d8"},
+  {max:20, dcRange:[16,19], dmgLow:"12d6", dmgHigh:"13d8"}
 ];
 const TRAP_KINDS = [
   {name:"Pit Trap", trigger:"pressure plate", effect:"floor gives way, falling damage plus", dmgType:"bludgeoning"},
@@ -1284,9 +1339,13 @@ function pickPartyLevelBand(level){
   return 20;
 }
 
-function buildEncounter(budgetXP, level, theme){
+function buildEncounter(budgetXP, level, theme, allowedTypes){
   const themedPool = MONSTERS.filter(m => theme==="mixed" || m.theme.includes(theme));
-  const pool = themedPool.length ? themedPool : MONSTERS;
+  let pool = themedPool.length ? themedPool : MONSTERS;
+  if(allowedTypes && allowedTypes.length){
+    const restricted = pool.filter(m => allowedTypes.includes(m.type));
+    if(restricted.length) pool = restricted;
+  }
   // target CR window around party level (a CR roughly equal to party level is already
   // a serious single-monster threat per the SRD, so keep the window fairly tight)
   const targetLevel = Math.max(1, level);
@@ -1340,10 +1399,10 @@ function bossDifficultyUp(difficulty){
 
 function buildContentForRole(role, budget, params){
   if(role==="encounter"){
-    return finalizeEncounterContent(buildEncounter(budget, params.level, params.theme));
+    return finalizeEncounterContent(buildEncounter(budget, params.level, params.theme, params.allowedTypes));
   }
   if(role==="boss"){
-    const enc = finalizeEncounterContent(buildEncounter(budget*1.3, params.level, params.theme));
+    const enc = finalizeEncounterContent(buildEncounter(budget*1.3, params.level, params.theme, params.allowedTypes));
     enc.loot = buildLoot(params.level, bossDifficultyUp(params.difficulty));
     return enc;
   }
@@ -1364,6 +1423,73 @@ function buildTrap(level){
   return {...kind, dc, dmgSpec: kind.dmgType==="none" ? null : dmg};
 }
 
+const OPEN_SPOTS = [
+  "atop a dusty stone pedestal, in plain view",
+  "piled carelessly in the corner of the room",
+  "scattered across an old table, easy to spot",
+  "sitting out atop a heap of debris",
+  "resting in a rotted sack near the far wall",
+  "stacked openly on a set of sagging shelves"
+];
+const HIDDEN_SPOTS = [
+  "buried beneath a thin layer of dust and rubble",
+  "tucked into a crack behind a loose wall stone",
+  "hidden beneath a creaking floorboard",
+  "concealed inside a hollowed-out statue",
+  "stashed inside a false-bottomed drawer",
+  "wedged behind a hanging, moth-eaten tapestry",
+  "sunk into a shallow pit beneath grime-caked rags",
+  "tucked behind a false panel in the masonry"
+];
+const LOCKABLE_CONTAINERS = [
+  "a rusted iron strongbox",
+  "a heavy oak chest bound in iron",
+  "a small brass lockbox",
+  "an ornate, corroded coffer",
+  "a weathered traveler's trunk",
+  "a sealed stone urn"
+];
+
+function buildLootAccess(level){
+  const tier = trapTierFor(level);
+  const isHidden = Math.random() < 0.5;
+  const isLocked = Math.random() < 0.45;
+  const spotText = isHidden ? choice(HIDDEN_SPOTS) : choice(OPEN_SPOTS);
+
+  let access = "open";
+  let searchDC = null, lockDC = null, forceDC = null, container = null;
+
+  if(isHidden){
+    access = "hidden";
+    searchDC = randi(tier.dcRange[0], tier.dcRange[1]);
+  }
+  if(isLocked){
+    access = isHidden ? "hidden-locked" : "locked";
+    container = choice(LOCKABLE_CONTAINERS);
+    lockDC = randi(tier.dcRange[0]+1, tier.dcRange[1]+2);
+    forceDC = lockDC + 3;
+  }
+
+  return { spotText, container, access, searchDC, lockDC, forceDC };
+}
+
+function describeLootAccess(a){
+  if(!a) return "";
+  if(a.access === "open"){
+    return `The loot is ${a.spotText}.`;
+  }
+  if(a.access === "hidden"){
+    return `The loot is ${a.spotText}. A DC ${a.searchDC} Wisdom (Perception) or Intelligence (Investigation) check finds it.`;
+  }
+  if(a.access === "locked"){
+    return `The loot sits inside ${a.container}, ${a.spotText}. It's locked — DC ${a.lockDC} to pick, or a DC ${a.forceDC} Strength check to force it open.`;
+  }
+  if(a.access === "hidden-locked"){
+    return `The loot is sealed inside ${a.container}, ${a.spotText}. A DC ${a.searchDC} Wisdom (Perception) or Intelligence (Investigation) check finds it — then DC ${a.lockDC} to pick the lock, or a DC ${a.forceDC} Strength check to force it open.`;
+  }
+  return "";
+}
+
 function buildLoot(level, difficulty){
   const band = pickPartyLevelBand(level);
   const baseGold = band===4 ? rand(20,90) : band===10 ? rand(100,450) : band===16 ? rand(400,1400) : rand(1000,4000);
@@ -1375,7 +1501,7 @@ function buildLoot(level, difficulty){
     const pool = LOOT_ITEMS.filter(it=>level>=it.minLevel);
     items.push(choice(pool.length?pool:LOOT_ITEMS));
   }
-  return {gold, items};
+  return {gold, items, access: buildLootAccess(level)};
 }
 
 function sizeDescriptor(room){
@@ -1400,6 +1526,11 @@ function assignContent(layout, params){
   const level = params.level, size = params.size, difficulty = params.difficulty, theme = params.theme, partySize = params.partySize;
   const perCharThresh = XP_THRESHOLDS[level][DIFF_INDEX[difficulty]];
   const totalBudgetPerEncounter = perCharThresh*partySize;
+
+  // Pick one faction for the whole dungeon so every room's inhabitants feel related.
+  const faction = pickFaction(theme, params.factionChoice);
+  params.allowedTypes = faction ? faction.types : null;
+  params.factionLabel = faction ? faction.label : "a mixed menagerie";
 
   const order = rooms.map((r,i)=>({i, d:depth[i]})).sort((a,b)=>a.d-b.d);
   const nonEntrance = order.filter(o=>o.i!==entrance).map(o=>o.i);
@@ -1441,7 +1572,7 @@ function assignContent(layout, params){
   const content = {};
   uniqueEncRooms.forEach((idx,k)=>{
     const roomBudget = totalDungeonBudget * (weights[k]/weightSum);
-    const group = buildEncounter(roomBudget, level, theme);
+    const group = buildEncounter(roomBudget, level, theme, params.allowedTypes);
     content[idx] = finalizeEncounterContent(group);
   });
 
@@ -1549,6 +1680,7 @@ function refreshAfterEdit(room){
   renderMap(state.layout);
   showDetail(room);
   renderSummary(state.layout, state.params);
+  saveStateToStorage();
 }
 
 function rerollRoomContents(room){
@@ -1633,6 +1765,16 @@ function addLootItem(room, name, customName, customBlurb){
 }
 function removeLootItem(room, idx){
   room.content.loot.items.splice(idx,1);
+  refreshAfterEdit(room);
+}
+function rerollLootAccess(room){
+  room.content.loot.access = buildLootAccess(state.params.level);
+  refreshAfterEdit(room);
+}
+function updateLootAccessDC(room, field, val){
+  const n = Math.max(5, Math.min(30, parseInt(val)||10));
+  room.content.loot.access[field] = n;
+  if(field === "lockDC") room.content.loot.access.forceDC = n + 3;
   refreshAfterEdit(room);
 }
 
@@ -1730,7 +1872,19 @@ function showDetail(room){
   if(c.loot){
     const l = c.loot;
     html += `<div class="subsection"><h3>Loot</h3><div class="loot-block">`;
-    html += `<div class="ledger-line"><span>Coin</span><span>gp <input type="number" class="edit-inline gold-input" id="goldInput" value="${l.gold}" min="0"></span></div>`;
+    if(l.access){
+      html += `<p class="loot-access-desc">${describeLootAccess(l.access)}</p>`;
+      html += `<div class="room-toolbar">`;
+      if(l.access.searchDC !== null){
+        html += `<span style="font-size:12px;color:var(--ink-soft);">Search DC <input type="number" class="edit-inline dc-input" id="lootSearchDcInput" value="${l.access.searchDC}" min="5" max="30"></span>`;
+      }
+      if(l.access.lockDC !== null){
+        html += `<span style="font-size:12px;color:var(--ink-soft);">Lock DC <input type="number" class="edit-inline dc-input" id="lootLockDcInput" value="${l.access.lockDC}" min="5" max="30"></span>`;
+      }
+      html += `<button class="btn-mini" id="btnRerollLootAccess">\u{1F3B2} Reroll Hiding Spot</button>`;
+      html += `</div>`;
+    }
+    html += `<div class="ledger-line" style="margin-top:8px;"><span>Coin</span><span>gp <input type="number" class="edit-inline gold-input" id="goldInput" value="${l.gold}" min="0"></span></div>`;
     if(l.items.length){
       l.items.forEach((it,idx)=>{
         html += `<div class="item-row" style="margin-top:6px;">
@@ -1799,6 +1953,14 @@ function showDetail(room){
 
   if(c.loot){
     document.getElementById('goldInput').addEventListener('change', e=>setLootGold(room, e.target.value));
+    if(c.loot.access){
+      const searchInput = document.getElementById('lootSearchDcInput');
+      if(searchInput) searchInput.addEventListener('change', e=>updateLootAccessDC(room, 'searchDC', e.target.value));
+      const lockInput = document.getElementById('lootLockDcInput');
+      if(lockInput) lockInput.addEventListener('change', e=>updateLootAccessDC(room, 'lockDC', e.target.value));
+      const rerollAccessBtn = document.getElementById('btnRerollLootAccess');
+      if(rerollAccessBtn) rerollAccessBtn.addEventListener('click', ()=>rerollLootAccess(room));
+    }
     body.querySelectorAll('[data-remove-item]').forEach(btn=>{
       btn.addEventListener('click', ()=> removeLootItem(room, parseInt(btn.getAttribute('data-remove-item'))));
     });
@@ -1834,6 +1996,7 @@ function renderSummary(layout, params){
   panel.innerHTML = `
     <h2>Ledger Summary</h2>
     <div class="diff-stamp">${params.difficulty} difficulty · lvl ${params.level} × ${params.partySize}</div>
+    <div style="margin-top:10px; font-style:italic; color:var(--ink-soft); font-size:12.5px;">Inhabited by ${params.factionLabel || "a mixed menagerie"}</div>
     <div style="margin-top:12px;">
       <div class="ledger-line"><span>Chambers</span><span>${layout.rooms.length}</span></div>
       <div class="ledger-line"><span>Encounters</span><span>${encRooms.length}</span></div>
@@ -1913,7 +2076,9 @@ function buildDungeonExport(){
       roomsHtml += `<div class="section"><h3>Trap — ${escapeHtml(t.name)}</h3><p>Triggered by ${escapeHtml(t.trigger)}. ${escapeHtml(t.effect)}${t.dmgSpec ? ` for ${escapeHtml(t.dmgSpec)} ${escapeHtml(t.dmgType)} damage` : ''}. DC ${t.dc} to detect/disarm.</p></div>`;
     }
     if(c.loot){
-      roomsHtml += `<div class="section"><h3>Loot</h3><p>${c.loot.gold} gp</p>`;
+      roomsHtml += `<div class="section"><h3>Loot</h3>`;
+      if(c.loot.access) roomsHtml += `<p class="loot-access-print">${escapeHtml(describeLootAccess(c.loot.access))}</p>`;
+      roomsHtml += `<p>${c.loot.gold} gp</p>`;
       if(c.loot.items.length){
         roomsHtml += `<ul class="item-list">`;
         c.loot.items.forEach(it=>{
@@ -1971,6 +2136,7 @@ function buildDungeonExport(){
   .item-list{ list-style: none; padding-left: 0; }
   .item-list li{ margin-bottom: 8px; }
   .item-meta{ color:#5B4B39; font-size: 12.5px; }
+  .loot-access-print{ font-style: italic; color:#5B4B39; font-size: 13px; margin-bottom: 6px; }
   .map-wrap{
     border: 1px solid rgba(43,33,22,0.3); border-radius: 4px;
     background: #DDD0AC; padding: 10px; margin-bottom: 24px;
@@ -1991,7 +2157,7 @@ function buildDungeonExport(){
 <body>
   <h1>Dungeon Cartographer's Ledger</h1>
   <p class="meta">Party: level ${params.level} × ${params.partySize} adventurers — ${escapeHtml(params.difficulty)} difficulty<br>
-  Theme: ${escapeHtml(params.theme)} — Size: ${escapeHtml(params.size)}</p>
+  Theme: ${escapeHtml(params.theme)} (${escapeHtml(params.factionLabel || "a mixed menagerie")}) — Size: ${escapeHtml(params.size)}</p>
   <div class="map-wrap">${getMapSvgMarkup()}</div>
   <hr>
   ${roomsHtml}
@@ -2016,13 +2182,32 @@ function downloadDungeon(){
 /* ============================== WIRE UP ============================== */
 
 function readParams(){
+  const factionRaw = document.getElementById('factionSelect').value;
   return {
     level: parseInt(document.getElementById('partyLevel').value),
     partySize: parseInt(document.getElementById('partySize').value),
     difficulty: document.getElementById('difficulty').value,
     size: document.getElementById('dungeonSize').value,
-    theme: document.getElementById('theme').value
+    theme: document.getElementById('theme').value,
+    factionChoice: (factionRaw === "random" || factionRaw === "") ? null : parseInt(factionRaw)
   };
+}
+
+function updateFactionOptions(){
+  const theme = document.getElementById('theme').value;
+  const sel = document.getElementById('factionSelect');
+  const subs = SUBFACTIONS[theme];
+  if(subs){
+    sel.innerHTML = `<option value="random">Random</option>` +
+      subs.map((f,i)=>`<option value="${i}">${capitalize(f.label)}</option>`).join("");
+    sel.disabled = false;
+  } else {
+    const fixedLabel = theme==="crypt" ? "An undead haunting (fixed)"
+      : theme==="infernal" ? "A fiendish incursion (fixed)"
+      : "No fixed faction — anything goes";
+    sel.innerHTML = `<option value="random">${fixedLabel}</option>`;
+    sel.disabled = true;
+  }
 }
 
 function generate(){
@@ -2033,6 +2218,54 @@ function generate(){
   renderMap(layout);
   renderSummary(layout, params);
   document.getElementById('detailBody').innerHTML = `<div class="empty-hint">Click a chamber on the map to read the Dungeon Master's notes for that room — its inhabitants, hazards, and hoard.</div>`;
+  saveStateToStorage();
+}
+
+/* ----- persistence: keep the current dungeon across page reloads ----- */
+
+const STORAGE_KEY = "dungeonCartographerState_v1";
+
+function saveStateToStorage(){
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({layout: state.layout, params: state.params}));
+  }catch(e){ /* storage unavailable (private browsing, quota, etc.) — fail silently */ }
+}
+
+function loadStateFromStorage(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(!raw) return null;
+    const parsed = JSON.parse(raw);
+    if(!parsed || !parsed.layout || !parsed.params || !Array.isArray(parsed.layout.rooms)) return null;
+    return parsed;
+  }catch(e){ return null; }
+}
+
+function bumpIidCounterPastRestored(layout){
+  let maxN = 0;
+  layout.rooms.forEach(r=>{
+    const monsters = (r.content && r.content.monsters) || [];
+    monsters.forEach(m=>{
+      const match = /^m(\d+)$/.exec(m._iid || "");
+      if(match) maxN = Math.max(maxN, parseInt(match[1]));
+    });
+  });
+  _iidCounter = Math.max(_iidCounter, maxN);
+}
+
+function applyParamsToControls(params){
+  document.getElementById('partyLevel').value = params.level;
+  document.getElementById('partyLevelVal').textContent = params.level;
+  document.getElementById('partySize').value = params.partySize;
+  document.getElementById('partySizeVal').textContent = params.partySize;
+  document.getElementById('difficulty').value = params.difficulty;
+  document.getElementById('dungeonSize').value = params.size;
+  document.getElementById('theme').value = params.theme;
+  updateFactionOptions();
+  const factionSel = document.getElementById('factionSelect');
+  if(!factionSel.disabled){
+    factionSel.value = (params.factionChoice === null || params.factionChoice === undefined) ? "random" : String(params.factionChoice);
+  }
 }
 
 document.getElementById('partyLevel').addEventListener('input', e=>{
@@ -2041,6 +2274,7 @@ document.getElementById('partyLevel').addEventListener('input', e=>{
 document.getElementById('partySize').addEventListener('input', e=>{
   document.getElementById('partySizeVal').textContent = e.target.value;
 });
+document.getElementById('theme').addEventListener('change', updateFactionOptions);
 document.getElementById('genBtn').addEventListener('click', generate);
 document.getElementById('downloadBtn').addEventListener('click', downloadDungeon);
 
@@ -2048,7 +2282,18 @@ document.getElementById('statModal').addEventListener('click', e=>{
   if(e.target.id === 'statModal') closeStatModal();
 });
 
-generate();
+const restored = loadStateFromStorage();
+if(restored){
+  bumpIidCounterPastRestored(restored.layout);
+  state = { layout: restored.layout, params: restored.params, selectedId: null };
+  applyParamsToControls(restored.params);
+  renderMap(restored.layout);
+  renderSummary(restored.layout, restored.params);
+  document.getElementById('detailBody').innerHTML = `<div class="empty-hint">Click a chamber on the map to read the Dungeon Master's notes for that room — its inhabitants, hazards, and hoard.</div>`;
+} else {
+  updateFactionOptions();
+  generate();
+}
 </script>
 </body>
 </html>
